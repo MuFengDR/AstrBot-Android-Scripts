@@ -168,13 +168,13 @@ verify_payload() {
   [ "$actual" = "$expected" ] || fail 'Installer payload SHA-256 verification failed.'
 }
 
-install_payload() {
+install_payload() (
   local payload="$1"
   local manifest="$2"
   local signature="$3"
   local stage previous
   stage="$(mktemp -d "$STATE_DIR/.stage.XXXXXX")"
-  trap 'rm -rf "$stage"' RETURN
+  trap 'rm -rf "$stage"' EXIT
 
   archive_paths_are_safe "$payload" || fail 'Installer archive contains an unsafe path.'
   tar -tzf "$payload" | grep -qx 'astrbot-installer/astrbot-startup.sh' || \
@@ -193,7 +193,7 @@ install_payload() {
   cp "$signature" "$STATE_DIR/installed-manifest.sig"
   manifest_value version "$manifest" > "$STATE_DIR/version"
   log "Installed shared installer $(cat "$STATE_DIR/version" 2>/dev/null || echo unknown)."
-}
+)
 
 download_manifest() {
   local destination="$1"
@@ -240,20 +240,20 @@ migrate_legacy_settings() {
   fi
 }
 
-fetch_and_install() {
+fetch_and_install() (
   local temporary artifact
   temporary="$(mktemp -d "$STATE_DIR/.download.XXXXXX")"
-  trap 'rm -rf "$temporary"' RETURN
+  trap 'rm -rf "$temporary"' EXIT
   artifact="$(download_release "$temporary")"
   install_payload "$temporary/$artifact" "$temporary/manifest.json" "$temporary/manifest.sig"
-}
+)
 
-import_and_install() {
+import_and_install() (
   local package="$1"
   local temporary artifact
   [ -f "$package" ] || fail "Offline installer package does not exist: $package"
   temporary="$(mktemp -d "$STATE_DIR/.import.XXXXXX")"
-  trap 'rm -rf "$temporary"' RETURN
+  trap 'rm -rf "$temporary"' EXIT
   archive_paths_are_safe "$package" || fail 'Offline installer package contains an unsafe path.'
   tar -xzf "$package" -C "$temporary" || fail 'Could not unpack the offline installer package.'
   [ -f "$temporary/manifest.json" ] && [ -f "$temporary/manifest.sig" ] || \
@@ -263,7 +263,7 @@ import_and_install() {
   validate_manifest "$temporary/manifest.json" "$temporary/manifest.sig" "$artifact"
   verify_payload "$temporary/$artifact" "$temporary/manifest.json"
   install_payload "$temporary/$artifact" "$temporary/manifest.json" "$temporary/manifest.sig"
-}
+)
 
 ensure_installer() {
   local version
@@ -285,17 +285,17 @@ require_installer() {
     fail 'The installed installer version is invalid. Update or import the installer again.'
 }
 
-check_update() {
+check_update() (
   local temporary artifact latest current
   temporary="$(mktemp -d "$STATE_DIR/.check.XXXXXX")"
-  trap 'rm -rf "$temporary"' RETURN
+  trap 'rm -rf "$temporary"' EXIT
   artifact="$(download_manifest "$temporary")"
   latest="$(manifest_value version "$temporary/manifest.json")"
   current="$(cat "$STATE_DIR/version" 2>/dev/null || echo not-installed)"
   log "Current version: $current"
   log "Verified remote version: ${latest:-unknown}"
   log 'No local installer files were changed.'
-}
+)
 
 usage() {
   cat <<'EOF'
