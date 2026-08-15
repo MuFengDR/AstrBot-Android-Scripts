@@ -5,7 +5,7 @@
 
 set -o pipefail
 
-INSTALLER_VERSION="0.1.0"
+INSTALLER_VERSION="0.1.1"
 CONFIG_DIR="${HOME:-/root}/.config/astrbot-android"
 CONFIG_FILE="$CONFIG_DIR/installer.env"
 FLAGS_DIR="$CONFIG_DIR/flags"
@@ -56,6 +56,26 @@ load_user_config() {
   CUSTOM_GIT_CLONE="$(printf '%s' "$encoded" | base64 -d 2>/dev/null || true)"
   if [ -z "$CUSTOM_GIT_CLONE" ]; then
     warn "Ignoring an invalid CUSTOM_GIT_CLONE_B64 setting."
+  fi
+}
+
+recover_package_manager() {
+  command -v dpkg >/dev/null 2>&1 || return 0
+  export DEBIAN_FRONTEND=noninteractive
+
+  log "Checking interrupted package operations."
+  if dpkg --configure -a; then
+    return 0
+  fi
+
+  warn "dpkg configuration is incomplete; attempting to repair package dependencies."
+  if ! apt-get -o Acquire::ForceIPv4=true --fix-broken install -y; then
+    fail "Unable to repair the Ubuntu package manager. Run 'dpkg --configure -a' in the terminal and review the package error."
+    return 1
+  fi
+  if ! dpkg --configure -a; then
+    fail "Ubuntu packages are still not fully configured. Run 'dpkg --configure -a' in the terminal and review the package error."
+    return 1
   fi
 }
 
@@ -120,6 +140,7 @@ github_url() {
 
 ensure_base_commands() {
   local missing=() command
+  recover_package_manager || return 1
   for command in sudo git curl tar ca-certificates; do
     command -v "$command" >/dev/null 2>&1 || missing+=("$command")
   done
