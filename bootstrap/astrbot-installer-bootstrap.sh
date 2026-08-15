@@ -12,6 +12,7 @@ STATE_DIR="/root/.astrbot-android/installer"
 CURRENT_DIR="$STATE_DIR/current"
 CURRENT_SCRIPT="$CURRENT_DIR/astrbot-startup.sh"
 PUBLIC_KEY_FILE="$STATE_DIR/installer-public.pem"
+RESOLVED_GITHUB_PROXY=""
 
 log() { printf '[AstrBot Installer] %s\n' "$*"; }
 fail() { printf '[AstrBot Installer] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -19,12 +20,51 @@ fail() { printf '[AstrBot Installer] ERROR: %s\n' "$*" >&2; exit 1; }
 github_url() {
   local asset="$1"
   local url="https://github.com/$INSTALLER_OWNER/$INSTALLER_REPO/releases/latest/download/$asset"
-  local proxy="${ASTRBOT_GITHUB_PROXY:-direct}"
+  local proxy="${RESOLVED_GITHUB_PROXY:-}"
   case "$proxy" in
-    ''|direct|auto) printf '%s\n' "$url" ;;
+    '') printf '%s\n' "$url" ;;
     https://*|http://*) printf '%s/%s\n' "${proxy%/}" "$url" ;;
     *) fail "Invalid GitHub proxy value: $proxy" ;;
   esac
+}
+
+resolve_github_proxy() {
+  local configured="${ASTRBOT_GITHUB_PROXY:-direct}" candidate status
+  case "$configured" in
+    ''|direct)
+      RESOLVED_GITHUB_PROXY=""
+      return 0
+      ;;
+    https://*|http://*)
+      RESOLVED_GITHUB_PROXY="${configured%/}"
+      log "Using configured GitHub proxy: $RESOLVED_GITHUB_PROXY"
+      return 0
+      ;;
+    auto) ;;
+    *) fail "Invalid GitHub proxy value: $configured" ;;
+  esac
+
+  for candidate in \
+    https://ghfast.top \
+    https://gh-proxy.com \
+    https://ghproxy.net \
+    https://ghproxy.cc \
+    https://gh.dpik.top \
+    https://gh.monlor.com \
+    https://gh.chjina.com \
+    https://github.boki.moe \
+    https://gh.jasonzeng.dev \
+    https://gh.geekertao.top \
+    https://gh.nxnow.top \
+    https://down.npee.cn; do
+    status="$(curl -fL --connect-timeout 10 --max-time 20 -o /dev/null -s -w '%{http_code}' "$candidate/https://raw.githubusercontent.com/astral-sh/uv/main/README.md" || true)"
+    if [ "$status" = "200" ]; then
+      RESOLVED_GITHUB_PROXY="$candidate"
+      log "Using GitHub proxy: $RESOLVED_GITHUB_PROXY"
+      return 0
+    fi
+  done
+  log 'No GitHub proxy responded; trying a direct connection.'
 }
 
 ensure_tools() {
@@ -226,12 +266,23 @@ import_and_install() {
 }
 
 ensure_installer() {
-  if [ -x "$CURRENT_SCRIPT" ]; then
-    log "Using installed shared installer $(cat "$STATE_DIR/version" 2>/dev/null || echo unknown)."
+  local version
+  version="$(cat "$STATE_DIR/version" 2>/dev/null || true)"
+  if [ -x "$CURRENT_SCRIPT" ] && [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    log "Using installed shared installer $version."
     return 0
   fi
   log 'No shared installer is installed; downloading the first verified version.'
   fetch_and_install
+}
+
+require_installer() {
+  local version
+  [ -x "$CURRENT_SCRIPT" ] || \
+    fail 'No verified installer is installed. Download, update, or import the installer first.'
+  version="$(cat "$STATE_DIR/version" 2>/dev/null || true)"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
+    fail 'The installed installer version is invalid. Update or import the installer again.'
 }
 
 check_update() {
@@ -259,20 +310,28 @@ EOF
 
 main() {
   local command="${1:---help}"
-  ensure_tools
-  write_public_key
-  migrate_legacy_settings
   case "$command" in
-    --ensure) ensure_installer ;;
-    --check) check_update ;;
-    --update) fetch_and_install ;;
+    --ensure|--check|--update)
+      ensure_tools
+      resolve_github_proxy
+      write_public_key
+      migrate_legacy_settings
+      case "$command" in
+        --ensure) ensure_installer ;;
+        --check) check_update ;;
+        --update) fetch_and_install ;;
+      esac
+      ;;
     --import)
       [ "$#" -eq 2 ] || fail '--import requires an offline package path.'
+      ensure_tools
+      write_public_key
+      migrate_legacy_settings
       import_and_install "$2"
       ;;
     --run)
       shift
-      ensure_installer
+      require_installer
       exec "$CURRENT_SCRIPT" "$@"
       ;;
     --help|-h|help) usage ;;
