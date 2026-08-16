@@ -5,7 +5,7 @@
 
 set -o pipefail
 
-INSTALLER_VERSION="0.1.2"
+INSTALLER_VERSION="0.1.3"
 CONFIG_DIR="${HOME:-/root}/.config/astrbot-android"
 CONFIG_FILE="$CONFIG_DIR/installer.env"
 FLAGS_DIR="$CONFIG_DIR/flags"
@@ -609,31 +609,48 @@ opencode_running() {
 }
 
 start_opencode() {
-  local pid
+  local pid attempt ready=0
   [ -x "$HOME/.local/bin/opencode" ] || {
     fail 'OpenCode is not installed.'
     return 1
   }
   if opencode_running; then
-    progress_echo "OpenCode $L_INSTALLED"
+    progress_echo 'OpenCode 已在运行'
     return 0
   fi
   mkdir -p "$OPENCODE_RUNTIME_DIR"
   rm -f "$OPENCODE_PID_FILE"
-  progress_echo "OpenCode $L_INSTALLING"
+  # OpenCode tries to invoke xdg-open in web mode; the container has no desktop.
+  mkdir -p "$HOME/.local/bin"
+  printf '%s\n' '#!/bin/sh' 'exit 0' > "$HOME/.local/bin/xdg-open"
+  chmod 755 "$HOME/.local/bin/xdg-open"
+  export PATH="$HOME/.local/bin:$PATH"
+  progress_echo 'OpenCode 正在启动'
   nohup "$HOME/.local/bin/opencode" web \
-    --hostname 0.0.0.0 \
+    --hostname 127.0.0.1 \
     --port "$ASTRBOT_OPENCODE_PORT" \
     >>"$OPENCODE_LOG_FILE" 2>&1 &
   pid=$!
   printf '%s\n' "$pid" > "$OPENCODE_PID_FILE"
-  sleep 1
-  if ! kill -0 "$pid" 2>/dev/null; then
-    fail "OpenCode Web 服务启动失败，请查看 $OPENCODE_LOG_FILE"
+  for attempt in {1..15}; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    if curl -s --max-time 1 -o /dev/null \
+      "http://127.0.0.1:$ASTRBOT_OPENCODE_PORT/"; then
+      ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$ready" != '1' ]; then
+    fail "OpenCode Web 服务启动失败，日志如下："
+    tail -n 30 "$OPENCODE_LOG_FILE" >&2 || true
+    kill "$pid" 2>/dev/null || true
     rm -f "$OPENCODE_PID_FILE"
     return 1
   fi
-  progress_echo "OpenCode $L_INSTALLED"
+  progress_echo 'OpenCode 已启动'
 }
 
 stop_opencode() {
