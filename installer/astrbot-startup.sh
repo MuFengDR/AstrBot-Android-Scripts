@@ -5,7 +5,7 @@
 
 set -o pipefail
 
-INSTALLER_VERSION="0.1.1"
+INSTALLER_VERSION="0.1.2"
 CONFIG_DIR="${HOME:-/root}/.config/astrbot-android"
 CONFIG_FILE="$CONFIG_DIR/installer.env"
 FLAGS_DIR="$CONFIG_DIR/flags"
@@ -15,6 +15,10 @@ ASTRBOT_GITHUB_PROXY="${ASTRBOT_GITHUB_PROXY:-auto}"
 ASTRBOT_FORCE_REINSTALL_STEP="${ASTRBOT_FORCE_REINSTALL_STEP:-}"
 ASTRBOT_DASHBOARD_PORT="${ASTRBOT_DASHBOARD_PORT:-6185}"
 ASTRBOT_ONEBOT_WS_PORT="${ASTRBOT_ONEBOT_WS_PORT:-6199}"
+ASTRBOT_OPENCODE_PORT="${ASTRBOT_OPENCODE_PORT:-4096}"
+OPENCODE_RUNTIME_DIR="$HOME/.config/astrbot-android/opencode"
+OPENCODE_PID_FILE="$OPENCODE_RUNTIME_DIR/opencode.pid"
+OPENCODE_LOG_FILE="$OPENCODE_RUNTIME_DIR/opencode.log"
 OPENCODE_VERSION="${ASTRBOT_OPENCODE_VERSION:-1.17.18}"
 
 export UV_LINK_MODE=copy
@@ -140,10 +144,14 @@ github_url() {
 
 ensure_base_commands() {
   local missing=() command
+  configure_apt_sources || return 1
   recover_package_manager || return 1
-  for command in sudo git curl tar ca-certificates; do
+  for command in sudo git curl tar; do
     command -v "$command" >/dev/null 2>&1 || missing+=("$command")
   done
+  # The certificate bundle is what curl/uv actually need.  dpkg can briefly
+  # report an unpacked/interrupted state even when the usable bundle exists.
+  [ -s /etc/ssl/certs/ca-certificates.crt ] || missing+=(ca-certificates)
   if [ "${#missing[@]}" -eq 0 ]; then
     progress_echo "Base commands $L_INSTALLED"
     return 0
@@ -244,6 +252,11 @@ linuxqq_ready() {
 }
 
 prepare_apt_downloads() {
+  configure_apt_sources || return 1
+  apt-get -o Acquire::ForceIPv4=true update
+}
+
+configure_apt_sources() {
   local file changed=0
   export DEBIAN_FRONTEND=noninteractive
   mkdir -p /etc/apt/apt.conf.d
@@ -258,7 +271,6 @@ prepare_apt_downloads() {
   if [ "$changed" -eq 1 ]; then
     log "Changed the Tsinghua Ubuntu mirror to HTTPS."
   fi
-  apt-get -o Acquire::ForceIPv4=true update
 }
 
 validate_linuxqq_deb() {
@@ -585,6 +597,68 @@ install_opencode() {
   progress_echo "OpenCode $L_INSTALLED"
 }
 
+opencode_pid() {
+  [ -s "$OPENCODE_PID_FILE" ] || return 1
+  cat "$OPENCODE_PID_FILE"
+}
+
+opencode_running() {
+  local pid
+  pid="$(opencode_pid 2>/dev/null || true)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+start_opencode() {
+  local pid
+  [ -x "$HOME/.local/bin/opencode" ] || {
+    fail 'OpenCode is not installed.'
+    return 1
+  }
+  if opencode_running; then
+    progress_echo "OpenCode $L_INSTALLED"
+    return 0
+  fi
+  mkdir -p "$OPENCODE_RUNTIME_DIR"
+  rm -f "$OPENCODE_PID_FILE"
+  progress_echo "OpenCode $L_INSTALLING"
+  nohup "$HOME/.local/bin/opencode" web \
+    --hostname 0.0.0.0 \
+    --port "$ASTRBOT_OPENCODE_PORT" \
+    >>"$OPENCODE_LOG_FILE" 2>&1 &
+  pid=$!
+  printf '%s\n' "$pid" > "$OPENCODE_PID_FILE"
+  sleep 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    fail "OpenCode Web 服务启动失败，请查看 $OPENCODE_LOG_FILE"
+    rm -f "$OPENCODE_PID_FILE"
+    return 1
+  fi
+  progress_echo "OpenCode $L_INSTALLED"
+}
+
+stop_opencode() {
+  local pid
+  pid="$(opencode_pid 2>/dev/null || true)"
+  if [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$OPENCODE_PID_FILE"
+  progress_echo 'OpenCode stopped'
+}
+
+uninstall_opencode() {
+  local clean_data="${ASTRBOT_OPENCODE_CLEAN_DATA:-0}"
+  stop_opencode >/dev/null 2>&1 || true
+  rm -f "$HOME/.local/bin/opencode"
+  if [ "$clean_data" = '1' ]; then
+    rm -rf "$HOME/.config/opencode" "$HOME/.local/share/opencode" "$HOME/.cache/opencode"
+  fi
+  rm -rf "$OPENCODE_RUNTIME_DIR"
+  progress_echo 'OpenCode uninstalled'
+}
+
 launch_astrbot() {
   if ! check_astrbot_ready; then
     printf '%s\n' '__ASTRBOT_MANUAL_ENV_REQUIRED__'
@@ -617,6 +691,15 @@ run_step() {
       maybe_prepare_reinstall astrbot
       ensure_base_commands && install_uv && install_astrbot
       ;;
+    opencode_start)
+      start_opencode
+      ;;
+    opencode_stop)
+      stop_opencode
+      ;;
+    opencode_uninstall)
+      uninstall_opencode
+      ;;
     opencode)
       maybe_prepare_reinstall opencode
       ensure_base_commands && install_opencode
@@ -631,7 +714,7 @@ run_step() {
       install_astrbot
       ;;
     *)
-      fail "Unknown step: $1. Available steps: base uv napcat astrbot opencode all start"
+      fail "Unknown step: $1. Available steps: base uv napcat astrbot opencode opencode_start opencode_stop opencode_uninstall all start"
       return 2
       ;;
   esac
@@ -640,7 +723,7 @@ run_step() {
 usage() {
   cat <<'EOF'
 Usage:
-  astrbot-startup.sh --step <base|uv|napcat|astrbot|opencode|all|start>
+  astrbot-startup.sh --step <base|uv|napcat|astrbot|opencode|opencode_start|opencode_stop|opencode_uninstall|all|start>
   astrbot-startup.sh --version
 EOF
 }
