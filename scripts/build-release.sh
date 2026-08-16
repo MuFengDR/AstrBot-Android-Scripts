@@ -22,7 +22,10 @@ offline="astrbot-installer-offline-v${version}.tar.gz"
 
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$dist" "$stage/astrbot-installer"
-cp "$root/installer/astrbot-startup.sh" "$stage/astrbot-installer/astrbot-startup.sh"
+# Always normalize the runtime script to Unix LF line endings. The release is
+# executed inside Ubuntu; preserving Windows CRLF causes Bash to read `\r` as
+# part of every command and fail before the installer starts.
+sed 's/\r$//' "$root/installer/astrbot-startup.sh" > "$stage/astrbot-installer/astrbot-startup.sh"
 chmod 700 "$stage/astrbot-installer/astrbot-startup.sh"
 tar -C "$stage" -czf "$dist/$artifact" astrbot-installer
 
