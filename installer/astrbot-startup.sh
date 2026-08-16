@@ -5,7 +5,7 @@
 
 set -o pipefail
 
-INSTALLER_VERSION="0.1.3"
+INSTALLER_VERSION="0.1.5"
 CONFIG_DIR="${HOME:-/root}/.config/astrbot-android"
 CONFIG_FILE="$CONFIG_DIR/installer.env"
 FLAGS_DIR="$CONFIG_DIR/flags"
@@ -189,7 +189,6 @@ prepare_reinstall_step() {
       pkill -f '/root/launcher\.sh' 2>/dev/null || true
       pkill -f 'napcat_instances/.*/launcher' 2>/dev/null || true
       rm -rf "$HOME/napcat" "$HOME/napcat.sh" "$HOME/launcher.sh" "$HOME/launcher.cpp" "$HOME/libnapcat_launcher.so"
-      export ASTRBOT_LINUXQQ_FORCE_INSTALL=1
       ;;
     astrbot)
       progress_echo "Preparing AstrBot reinstall"
@@ -290,6 +289,9 @@ use_local_linuxqq_deb() {
     [ -n "$candidate" ] && [ -f "$candidate" ] || continue
     validate_linuxqq_deb "$candidate" || continue
     log "Using local LinuxQQ package: $candidate"
+    if [ "$candidate" = "$destination" ]; then
+      return 0
+    fi
     cp -f "$candidate" "$destination"
     return $?
   done
@@ -343,9 +345,19 @@ linuxqq_download_url() {
   esac
 }
 
+linuxqq_release_url() {
+  github_url 'https://github.com/MuFengDR/AstrBot-Android-Scripts/releases/latest/download/linuxqq-arm64.deb'
+}
+
+download_linuxqq_file() {
+  local url="$1" destination="$2"
+  curl -fL --connect-timeout 20 --max-time 600 \
+    -A 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124 Safari/537.36' \
+    -e 'https://im.qq.com/' "$url" -o "$destination"
+}
+
 install_linuxqq() {
-  local deb="$HOME/QQ.deb"
-  local part="${deb}.part"
+  local deb="$HOME/QQ.deb" part="${HOME}/QQ.deb.part"
   local url package_arch package_name sound_package
 
   if linuxqq_ready && [ "${ASTRBOT_LINUXQQ_FORCE_INSTALL:-0}" != "1" ]; then
@@ -355,28 +367,30 @@ install_linuxqq() {
 
   progress_echo "LinuxQQ $L_NOT_INSTALLED, $L_INSTALLING"
   rm -f "$part"
-  if ! url="$(linuxqq_download_url)"; then
-    warn "Unable to find a LinuxQQ ARM64 package URL. Set ASTRBOT_LINUXQQ_URL or ASTRBOT_LINUXQQ_FILE to override it."
-    return 1
-  fi
-
-  if ! validate_linuxqq_deb "$deb" || [ "${ASTRBOT_LINUXQQ_FORCE_INSTALL:-0}" = "1" ]; then
-    rm -f "$part"
-    log "Downloading LinuxQQ ARM64 package."
-    if ! curl -fL --connect-timeout 20 --max-time 600 \
-      -A 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124 Safari/537.36' \
-      -e 'https://im.qq.com/' "$url" -o "$part"; then
+  if ! use_local_linuxqq_deb "$deb"; then
+    network_test || true
+    url="$(linuxqq_release_url)"
+    log "Downloading LinuxQQ package from AstrBot Scripts Release."
+    if download_linuxqq_file "$url" "$part" && validate_linuxqq_deb "$part"; then
+      mv -f "$part" "$deb"
+    else
       rm -f "$part"
-      log "Direct LinuxQQ download failed; trying a signed URL."
-      if ! get_linuxqq_signed_url "$url" || ! curl -fL --connect-timeout 20 --max-time 600 \
-        -A 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124 Safari/537.36' \
-        -e 'https://im.qq.com/' "$LINUXQQ_SIGNED_URL" -o "$part"; then
-        rm -f "$part"
-        use_local_linuxqq_deb "$part" || return 1
+      log "AstrBot Scripts Release LinuxQQ package unavailable; falling back to official package."
+      if ! url="$(linuxqq_download_url)"; then
+        warn "Unable to find a LinuxQQ ARM64 package URL."
+        return 1
       fi
+      if ! download_linuxqq_file "$url" "$part"; then
+        rm -f "$part"
+        log "Official LinuxQQ download failed; trying a signed URL."
+        if ! get_linuxqq_signed_url "$url" || ! download_linuxqq_file "$LINUXQQ_SIGNED_URL" "$part"; then
+          rm -f "$part"
+          return 1
+        fi
+      fi
+      validate_linuxqq_deb "$part" || { rm -f "$part"; return 1; }
+      mv -f "$part" "$deb"
     fi
-    validate_linuxqq_deb "$part" || { rm -f "$part"; return 1; }
-    mv -f "$part" "$deb"
   fi
 
   validate_linuxqq_deb "$deb" || return 1
