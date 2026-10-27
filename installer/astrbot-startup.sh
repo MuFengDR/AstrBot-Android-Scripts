@@ -5,7 +5,7 @@
 
 set -o pipefail
 
-INSTALLER_VERSION="0.1.5"
+INSTALLER_VERSION="0.1.6"
 CONFIG_DIR="${HOME:-/root}/.config/astrbot-android"
 CONFIG_FILE="$CONFIG_DIR/installer.env"
 FLAGS_DIR="$CONFIG_DIR/flags"
@@ -19,7 +19,10 @@ ASTRBOT_OPENCODE_PORT="${ASTRBOT_OPENCODE_PORT:-4096}"
 OPENCODE_RUNTIME_DIR="$HOME/.config/astrbot-android/opencode"
 OPENCODE_PID_FILE="$OPENCODE_RUNTIME_DIR/opencode.pid"
 OPENCODE_LOG_FILE="$OPENCODE_RUNTIME_DIR/opencode.log"
-OPENCODE_VERSION="${ASTRBOT_OPENCODE_VERSION:-1.17.18}"
+# Leave the release unpinned by default so OpenCode reinstall gets the latest
+# stable ARM64 asset. Set ASTRBOT_OPENCODE_VERSION to a numeric version when a
+# release must be pinned for reproducibility.
+OPENCODE_VERSION="${ASTRBOT_OPENCODE_VERSION:-latest}"
 
 export UV_LINK_MODE=copy
 export UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -588,7 +591,7 @@ install_astrbot() {
 install_opencode() {
   local install_dir="$HOME/.local/bin"
   local archive="opencode-linux-arm64.tar.gz"
-  local tmp
+  local tmp download_url
   if [ -x "$install_dir/opencode" ]; then
     progress_echo "OpenCode $L_INSTALLED"
     return 0
@@ -596,7 +599,13 @@ install_opencode() {
   progress_echo "OpenCode $L_NOT_INSTALLED, $L_INSTALLING"
   network_test
   tmp="$(mktemp -d "$TMPDIR/opencode.XXXXXX")" || return 1
-  if ! curl -fL "$(github_url "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/${archive}")" -o "$tmp/$archive"; then
+  if [ "$OPENCODE_VERSION" = 'latest' ]; then
+    download_url="https://github.com/anomalyco/opencode/releases/latest/download/${archive}"
+  else
+    download_url="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/${archive}"
+  fi
+  log "Downloading OpenCode ${OPENCODE_VERSION}."
+  if ! curl -fL "$(github_url "$download_url")" -o "$tmp/$archive"; then
     rm -rf "$tmp"
     return 1
   fi
