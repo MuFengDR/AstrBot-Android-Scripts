@@ -5,7 +5,7 @@
 
 set -o pipefail
 
-INSTALLER_VERSION="0.1.6"
+INSTALLER_VERSION="0.1.7"
 CONFIG_DIR="${HOME:-/root}/.config/astrbot-android"
 CONFIG_FILE="$CONFIG_DIR/installer.env"
 FLAGS_DIR="$CONFIG_DIR/flags"
@@ -253,11 +253,6 @@ linuxqq_ready() {
     dpkg-query -W -f='${Status}\n' linuxqq 2>/dev/null | grep -qx 'install ok installed'
 }
 
-prepare_apt_downloads() {
-  configure_apt_sources || return 1
-  apt-get -o Acquire::ForceIPv4=true update
-}
-
 configure_apt_sources() {
   local file changed=0
   export DEBIAN_FRONTEND=noninteractive
@@ -287,81 +282,21 @@ validate_linuxqq_deb() {
 }
 
 use_local_linuxqq_deb() {
-  local destination="$1" candidate
-  for candidate in "${ASTRBOT_LINUXQQ_FILE:-}" "$HOME"/*.deb /sdcard/Download/*.deb /storage/emulated/0/Download/*.deb; do
-    [ -n "$candidate" ] && [ -f "$candidate" ] || continue
-    validate_linuxqq_deb "$candidate" || continue
-    log "Using local LinuxQQ package: $candidate"
-    if [ "$candidate" = "$destination" ]; then
-      return 0
-    fi
-    cp -f "$candidate" "$destination"
-    return $?
-  done
-  return 1
-}
-
-get_linuxqq_signed_url() {
-  local bare_url="$1"
-  local response="$TMPDIR/linuxqq-sign.json"
-  local normalized="$TMPDIR/linuxqq-sign-normalized.json"
-  local payload
-  LINUXQQ_SIGNED_URL=""
-  payload="$(printf '{\"url\":\"%s\"}' "$bare_url")"
-  if ! curl -fL --connect-timeout 15 --max-time 30 \
-    -A 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124 Safari/537.36' \
-    -e 'https://im.qq.com/' \
-    -H 'Accept: application/json, text/plain, */*' \
-    -H 'Content-Type: application/json' \
-    -H 'x-oidb: {"uint32_command":"0x9b8e","uint32_service_type":1}' \
-    --data "$payload" 'https://im.qq.com/http2rpc/gotrpc/noauth/trpc.qqntv2.urlsign.UrlSign/GetSign' \
-    -o "$response"; then
-    return 1
-  fi
-  sed 's#\\/#/#g; s#\\u0026#\&#g; s#\\u003d#=#g' "$response" > "$normalized"
-  LINUXQQ_SIGNED_URL="$(grep -Eo '\"url\"[[:space:]]*:[[:space:]]*\"[^\"]+\"' "$normalized" | head -n 1 | sed -E 's/^\"url\"[[:space:]]*:[[:space:]]*\"//; s/\"$//')"
-  case "$LINUXQQ_SIGNED_URL" in
-    https://*.deb|https://*.deb\?*) return 0 ;;
-    *) LINUXQQ_SIGNED_URL=""; return 1 ;;
-  esac
-}
-
-linuxqq_download_url() {
-  local config_url="${ASTRBOT_LINUXQQ_CONFIG_URL:-https://cdn-go.cn/qq-web/im.qq.com_new/latest/rainbow/linuxConfig.js}"
-  local config="$TMPDIR/linuxqq-config.js"
-  local normalized="$TMPDIR/linuxqq-config-normalized.js"
-  local url="${ASTRBOT_LINUXQQ_URL:-}"
-
-  if [ -n "$url" ]; then
-    printf '%s\n' "$url"
-    return 0
-  fi
-  curl -fL --connect-timeout 15 --max-time 60 "$config_url" -o "$config" || return 1
-  sed 's#\\/#/#g' "$config" > "$normalized"
-  url="$(grep -Eo "(https?:)?//[^\"'[:space:]]+" "$normalized" | grep -Ei '(arm64|aarch64)[^[:space:]]*\.deb([?#][^[:space:]]*)?' | head -n 1)"
-  case "$url" in
-    //*) url="https:$url" ;;
-  esac
-  case "$url" in
-    https://*.deb|https://*.deb\?*) printf '%s\n' "$url" ;;
-    *) return 1 ;;
-  esac
-}
-
-linuxqq_release_url() {
-  github_url 'https://github.com/MuFengDR/AstrBot-Android-Scripts/releases/latest/download/linuxqq-arm64.deb'
-}
-
-download_linuxqq_file() {
-  local url="$1" destination="$2"
-  curl -fL --connect-timeout 20 --max-time 600 \
-    -A 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124 Safari/537.36' \
-    -e 'https://im.qq.com/' "$url" -o "$destination"
+  local destination="$1" candidate="${ASTRBOT_LINUXQQ_FILE:-}"
+  [ -n "$candidate" ] && [ -f "$candidate" ] || return 1
+  validate_linuxqq_deb "$candidate" || return 1
+  log "Using the LinuxQQ package selected by the user."
+  [ "$candidate" = "$destination" ] && return 0
+  cp -f "$candidate" "$destination"
 }
 
 install_linuxqq() {
-  local deb="$HOME/QQ.deb" part="${HOME}/QQ.deb.part"
-  local url package_arch package_name sound_package
+  local deb="$HOME/QQ.deb"
+
+  if [ -z "${ASTRBOT_LINUXQQ_FILE:-}" ]; then
+    printf '%s\n' 'NapCat团队收到tx律师函已经删库跑路，请使用离线安装旧版，否则与最后的NapCat版本不兼容'
+    return 1
+  fi
 
   if linuxqq_ready && [ "${ASTRBOT_LINUXQQ_FORCE_INSTALL:-0}" != "1" ]; then
     log "LinuxQQ is already installed."
@@ -369,130 +304,22 @@ install_linuxqq() {
   fi
 
   progress_echo "LinuxQQ $L_NOT_INSTALLED, $L_INSTALLING"
-  rm -f "$part"
   if ! use_local_linuxqq_deb "$deb"; then
-    network_test || true
-    url="$(linuxqq_release_url)"
-    log "Downloading LinuxQQ package from AstrBot Scripts Release."
-    if download_linuxqq_file "$url" "$part" && validate_linuxqq_deb "$part"; then
-      mv -f "$part" "$deb"
-    else
-      rm -f "$part"
-      log "AstrBot Scripts Release LinuxQQ package unavailable; falling back to official package."
-      if ! url="$(linuxqq_download_url)"; then
-        warn "Unable to find a LinuxQQ ARM64 package URL."
-        return 1
-      fi
-      if ! download_linuxqq_file "$url" "$part"; then
-        rm -f "$part"
-        log "Official LinuxQQ download failed; trying a signed URL."
-        if ! get_linuxqq_signed_url "$url" || ! download_linuxqq_file "$LINUXQQ_SIGNED_URL" "$part"; then
-          rm -f "$part"
-          return 1
-        fi
-      fi
-      validate_linuxqq_deb "$part" || { rm -f "$part"; return 1; }
-      mv -f "$part" "$deb"
-    fi
+    warn "The selected LinuxQQ package is invalid or unreadable."
+    return 1
   fi
-
-  validate_linuxqq_deb "$deb" || return 1
-  package_arch="$(dpkg-deb -f "$deb" Architecture 2>/dev/null)"
-  package_name="$(dpkg-deb -f "$deb" Package 2>/dev/null)"
-  case "$package_arch" in arm64|aarch64) ;; *) return 1 ;; esac
-  [ "$package_name" = "linuxqq" ] || return 1
-  if apt-cache show libasound2t64 >/dev/null 2>&1; then sound_package=libasound2t64; else sound_package=libasound2; fi
-  apt-get -o Acquire::ForceIPv4=true install -y libnss3 libnspr4 libgbm1 "$sound_package" || return 1
-  apt-get -o Acquire::ForceIPv4=true install -y --allow-downgrades "$deb" || return 1
+  if ! dpkg -i "$deb"; then
+    warn "Offline QQ installation failed. Import the LinuxQQ dependency package and retry."
+    return 1
+  fi
   linuxqq_ready || return 1
   rm -f "$deb"
   progress_echo "LinuxQQ $L_INSTALLED"
 }
 
-patch_napcat_installer() {
-  local installer="$1"
-  sed -i -E 's/curl[[:space:]]+-k[[:space:]]+-L/curl -fL/g; s/curl[[:space:]]+-kL/curl -fL/g' "$installer"
-  if apt-cache show libasound2t64 >/dev/null 2>&1; then
-    sed -i -E 's/(^|[^[:alnum:]_])libasound2([^[:alnum:]_]|$)/\1libasound2t64\2/g' "$installer"
-  fi
-  sed -i -E 's/^[[:space:]]*install_linuxqq[[:space:]]*$/log "LinuxQQ is managed by AstrBot Android"/' "$installer"
-  ! grep -qE '^[[:space:]]*install_linuxqq[[:space:]]*$' "$installer"
-}
-
-configure_napcat_token_ttl() {
-  [ -f "$HOME/napcat/napcat.mjs" ] || return 0
-  sed -i -E 's#static MAX_CREDENTIAL_VALID_SECONDS = [0-9]+#static MAX_CREDENTIAL_VALID_SECONDS = 604800#g' "$HOME/napcat/napcat.mjs"
-  sed -i -E 's#Rp\.set\(`revoked:\$\{r\}`, !0, [0-9]+\)#Rp.set(`revoked:${r}`, !0, 604800)#g' "$HOME/napcat/napcat.mjs"
-}
-
-check_napcat_ready() {
-  local missing=0
-  command -v qq >/dev/null 2>&1 || missing=1
-  command -v Xvfb >/dev/null 2>&1 || missing=1
-  dpkg -s linuxqq 2>/dev/null | grep -q 'Status: install ok installed' || missing=1
-  dpkg -s libnss3 2>/dev/null | grep -q 'Status: install ok installed' || missing=1
-  dpkg -s libnspr4 2>/dev/null | grep -q 'Status: install ok installed' || missing=1
-  { dpkg -s libasound2t64 2>/dev/null || dpkg -s libasound2 2>/dev/null; } | grep -q 'Status: install ok installed' || missing=1
-  [ -f "$HOME/launcher.sh" ] || missing=1
-  [ -f "$HOME/libnapcat_launcher.so" ] || missing=1
-  [ -d "$HOME/napcat" ] || missing=1
-  [ "$missing" -eq 0 ]
-}
-
 install_napcat() {
-  local installer="$HOME/napcat.sh"
-  if ! check_napcat_ready; then
-    progress_echo "NapCat $L_NOT_INSTALLED, $L_INSTALLING"
-    prepare_apt_downloads || return 1
-    apt --fix-broken install -y || warn "apt could not completely repair dependencies before NapCat installation."
-    install_linuxqq || return 1
-    [ -d "$HOME/napcat/config" ] && cp -a "$HOME/napcat/config" "$HOME/napcat_config_backup" 2>/dev/null || true
-    rm -rf "$HOME/napcat" "$HOME/napcat.sh" "$HOME/launcher.sh" "$HOME/launcher.cpp" "$HOME/libnapcat_launcher.so"
-    network_test
-    curl -fL "$(github_url 'https://raw.githubusercontent.com/NapNeko/napcat-linux-installer/refs/heads/main/install.sh')" -o "$installer" || return 1
-    chmod 700 "$installer"
-    patch_napcat_installer "$installer" || return 1
-    bash "$installer" || return 1
-    pkill -f 'qq --no-sandbox' 2>/dev/null || true
-    pkill -f 'NapCat' 2>/dev/null || true
-    pkill -f '/root/launcher_.*\.sh' 2>/dev/null || true
-    pkill -f '/root/launcher\.sh' 2>/dev/null || true
-    pkill -f 'napcat_instances/.*/launcher' 2>/dev/null || true
-    if [ -d "$HOME/napcat_config_backup" ]; then
-      mkdir -p "$HOME/napcat/config"
-      cp -a "$HOME/napcat_config_backup/." "$HOME/napcat/config/"
-      rm -rf "$HOME/napcat_config_backup"
-    fi
-  fi
-  if [ ! -f "$HOME/napcat/config/onebot11.json" ]; then
-    mkdir -p "$HOME/napcat/config"
-    cat > "$HOME/napcat/config/onebot11.json" <<EOF
-{
-  "network": {
-    "httpServers": [],
-    "httpClients": [],
-    "websocketServers": [],
-    "websocketClients": [{
-      "name": "WsClient",
-      "enable": true,
-      "url": "ws://localhost:${ASTRBOT_ONEBOT_WS_PORT}/ws",
-      "messagePostFormat": "array",
-      "reportSelfMessage": false,
-      "reconnectInterval": 5000,
-      "token": "kasdkfljsadhlskdjhasdlkfshdlafksjdhf",
-      "debug": false,
-      "heartInterval": 30000
-    }]
-  },
-  "musicSignUrl": "",
-  "enableLocalFile2Url": false,
-  "parseMultMsg": false
-}
-EOF
-  fi
-  configure_napcat_token_ttl
-  check_napcat_ready || return 1
-  progress_echo "NapCat $L_INSTALLED"
+  printf '%s\n' 'NapCat团队收到tx律师函已经删库跑路，请使用离线安装'
+  return 1
 }
 
 check_astrbot_ready() {
@@ -724,8 +551,10 @@ run_step() {
       ensure_base_commands && install_uv
       ;;
     napcat)
-      maybe_prepare_reinstall napcat
-      ensure_base_commands && install_napcat
+      install_napcat
+      ;;
+    linuxqq)
+      install_linuxqq
       ;;
     astrbot)
       maybe_prepare_reinstall astrbot
@@ -754,7 +583,7 @@ run_step() {
       install_astrbot
       ;;
     *)
-      fail "Unknown step: $1. Available steps: base uv napcat astrbot opencode opencode_start opencode_stop opencode_uninstall all start"
+      fail "Unknown step: $1. Available steps: base uv linuxqq napcat astrbot opencode opencode_start opencode_stop opencode_uninstall all start"
       return 2
       ;;
   esac
@@ -763,7 +592,7 @@ run_step() {
 usage() {
   cat <<'EOF'
 Usage:
-  astrbot-startup.sh --step <base|uv|napcat|astrbot|opencode|opencode_start|opencode_stop|opencode_uninstall|all|start>
+  astrbot-startup.sh --step <base|uv|linuxqq|napcat|astrbot|opencode|opencode_start|opencode_stop|opencode_uninstall|all|start>
   astrbot-startup.sh --version
 EOF
 }
